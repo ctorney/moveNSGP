@@ -66,10 +66,64 @@ def setup_and_run_hmc(threadid):
                            lpriors=lpriors, mean_obs_noise=0, std_obs_noise=5.0 )
 
 
+    def build_trainable_location_scale_distribution(initial_loc, initial_scale):
+        
+        with tf.name_scope('build_trainable_location_scale_distribution'):
+            dtype = tf.float32
+            initial_loc = initial_loc * tf.ones(tf.shape(initial_scale), dtype=dtype)
+            initial_scale = initial_scale * tf.ones_like(initial_loc)
+            loc = tf.Variable(initial_value=initial_loc, name='loc')
+            scale=tfp.util.TransformedVariable(tf.Variable(initial_scale, name='scale'), tfp.bijectors.Softplus())
+            posterior_dist = tfd.Normal(loc=loc, scale=scale)
+            posterior_dist = tfd.Independent(posterior_dist)
+            
+        return posterior_dist
+
+
+    flat_component_dists = []
+
+    for kparam in mover.kernel_params:
+        init_loc = kparam
+        init_scale = tf.random.uniform(shape=kparam.shape, minval=-2, maxval=2, dtype=tf.dtypes.float32)
+        flat_component_dists.append(build_trainable_location_scale_distribution(init_loc,init_scale))
+
+    surrogate_posterior = tfd.JointDistributionSequential(flat_component_dists)
+
+
+
+    def target_log_prob_fn(*inputs):
+        params = [tf.squeeze(a) for a in inputs]
+        loss = mover.log_posterior(*params)
+        return loss
+
+
+
+
+    start = time.time()
+    losses = tfp.vi.fit_surrogate_posterior(target_log_prob_fn, surrogate_posterior,optimizer=tf.optimizers.Adam(learning_rate=0.1, beta_2=0.9), num_steps=150)
+
+
+    steps = []
+    max_step = 0.0
+    
+    for i in range(len(mover.kernel_params)):
+        stdstep = surrogate_posterior.stddev()[i].numpy()
+        if stdstep.max()>max_step:
+            max_step = stdstep.max()
+        print(stdstep.max())
+        print(max_step)
+        steps.append(stdstep)
+
+    steps = [(1e-2/max_step)*s for s in steps] 
+
     start = time.time()
 
     # sample from the posterior
-    mover.hmc_sample(num_samples=2000, skip=0, burn_in=1000)
+    num_samples=20
+    burn_in=10
+    kr = amover.hmc_sample(num_samples=num_samples, skip=0, burn_in=burn_in, init_step=steps)
+    print(np.sum(kr.inner_results.is_accepted.numpy()/num_samples))
+
     end = time.time()
 
     means_z = mover.get_mean_samples() + mean_x
