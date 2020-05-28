@@ -43,11 +43,11 @@ def setup_and_run_hmc(threadid):
     transforms=[sp] 
 
     # prior distribution on parameter 
-    lpriors = [tfd.Normal(loc = np.float64(0.),scale=np.float64(5.)), 
-               tfd.Normal(loc=np.float64(0.), scale=np.float64(10.0))]
+    lpriors = [tfd.Normal(loc = np.float64(0.),scale=np.float64(1.)), 
+               tfd.Normal(loc=np.float64(0.), scale=np.float64(1.0))]
     #              tfd.Normal(loc=np.float64(0.), scale=np.float64(10.0))]
 
-    apriors = [tfd.Normal(loc = np.float64(0.),scale=np.float64(5.))]
+    apriors = [tfd.Normal(loc = np.float64(0.),scale=np.float64(1.))]
 
 
     # create the model 
@@ -62,13 +62,66 @@ def setup_and_run_hmc(threadid):
                            ltransforms=transforms)
 
 
+    def build_trainable_location_scale_distribution(initial_loc, initial_scale):
+        
+        with tf.name_scope('build_trainable_location_scale_distribution'):
+            dtype = tf.float32
+            initial_loc = initial_loc * tf.ones(tf.shape(initial_scale), dtype=dtype)
+            initial_scale = tf.nn.softplus(initial_scale * tf.ones_like(initial_loc))
+            loc = tf.Variable(initial_value=initial_loc, name='loc')
+            scale=tfp.util.TransformedVariable(tf.Variable(initial_scale, name='scale'), tfp.bijectors.Softplus())
+            posterior_dist = tfd.Normal(loc=loc, scale=scale)
+            posterior_dist = tfd.Independent(posterior_dist)
+            
+        return posterior_dist
 
+
+    flat_component_dists = []
+
+    for kparam in mover.kernel_params:
+        init_loc = kparam
+        init_scale = tf.random.uniform(shape=kparam.shape, minval=-2, maxval=2, dtype=tf.dtypes.float32)
+        flat_component_dists.append(build_trainable_location_scale_distribution(init_loc,init_scale))
+
+    surrogate_posterior = tfd.JointDistributionSequential(flat_component_dists)
+
+
+
+    def target_log_prob_fn(*inputs):
+        params = [tf.squeeze(a) for a in inputs]
+        loss = mover.log_posterior(*params)
+        return loss
+
+
+
+
+    start = time.time()
+    losses = tfp.vi.fit_surrogate_posterior(target_log_prob_fn, surrogate_posterior,optimizer=tf.optimizers.Adam(learning_rate=0.1, beta_2=0.9), num_steps=500)
+
+
+    steps = []
+    max_step = 0.0
+    
+    for i in range(len(mover.kernel_params)):
+        stdstep = surrogate_posterior.stddev()[i].numpy()
+        if stdstep.max()>max_step:
+            max_step = stdstep.max()
+        steps.append(stdstep)
+
+    #steps = [(1e-2/max_step)*s for s in steps] 
 
     start = time.time()
 
     # sample from the posterior
+    num_samples=200
+    burn_in=100
+    kr = mover.hmc_sample(num_samples=num_samples, skip=0, burn_in=burn_in, init_step=steps)
+    print(np.sum(kr.inner_results.is_accepted.numpy()/num_samples))
+
+
+
+    # sample from the posterior
     #mover.hmc_sample(num_samples=2000, skip=0, burn_in=1000)
-    mover.hmc_sample(num_samples=4000, skip=0, burn_in=2000)
     end = time.time()
     lengths = mover.get_lengthscale_samples(X=pZ)
     np.save('data/length_switch_' + str(threadid) + '.npy',lengths)
