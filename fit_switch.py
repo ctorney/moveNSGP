@@ -35,7 +35,7 @@ def setup_and_run_hmc(threadid):
 
 
     # initial value of kernel amplitude
-    lparams_init=[0.0, 1.0] 
+    lparams_init=[0.0, 3.0] 
 
     aparams_init=[0.0] 
 
@@ -43,11 +43,11 @@ def setup_and_run_hmc(threadid):
     transforms=[sp] 
 
     # prior distribution on parameter 
-    lpriors = [tfd.Normal(loc = np.float64(0.),scale=np.float64(1.)), 
-               tfd.Normal(loc=np.float64(0.), scale=np.float64(1.0))]
+    lpriors = [tfd.Normal(loc = np.float64(0.),scale=np.float64(5.)), 
+               tfd.Normal(loc=np.float64(3.), scale=np.float64(1))]
     #              tfd.Normal(loc=np.float64(0.), scale=np.float64(10.0))]
 
-    apriors = [tfd.Normal(loc = np.float64(0.),scale=np.float64(1.))]
+    apriors = [tfd.Normal(loc = np.float64(0.),scale=np.float64(5.))]
 
 
     # create the model 
@@ -59,7 +59,8 @@ def setup_and_run_hmc(threadid):
                            lkernel=rbf_kernel, 
                            lparams_init=lparams_init, 
                            lpriors=lpriors, 
-                           ltransforms=transforms)
+                           ltransforms=transforms, 
+                           mean_obs_noise=-5, std_obs_noise=1.0)
 
 
     def build_trainable_location_scale_distribution(initial_loc, initial_scale):
@@ -96,7 +97,7 @@ def setup_and_run_hmc(threadid):
 
 
     start = time.time()
-    losses = tfp.vi.fit_surrogate_posterior(target_log_prob_fn, surrogate_posterior,optimizer=tf.optimizers.Adam(learning_rate=0.1, beta_2=0.9), num_steps=500)
+    losses = tfp.vi.fit_surrogate_posterior(target_log_prob_fn, surrogate_posterior,optimizer=tf.optimizers.Adam(learning_rate=0.1, beta_2=0.9), num_steps=5000)
 
 
     steps = []
@@ -104,18 +105,20 @@ def setup_and_run_hmc(threadid):
     
     for i in range(len(mover.kernel_params)):
         stdstep = surrogate_posterior.stddev()[i].numpy()
+        meanp = surrogate_posterior.mean()[i].numpy()
+        mover.kernel_params[i].assign(meanp)
         if stdstep.max()>max_step:
             max_step = stdstep.max()
         steps.append(stdstep)
 
-    #steps = [(1e-2/max_step)*s for s in steps] 
+    steps = [(1e-2/max_step)*s for s in steps] 
 
     start = time.time()
 
     # sample from the posterior
-    num_samples=200
-    burn_in=100
-    kr = mover.hmc_sample(num_samples=num_samples, skip=0, burn_in=burn_in, init_step=steps)
+    num_samples=200#4000
+    burn_in=500
+    kr = mover.hmc_sample(num_samples=num_samples, skip=8, burn_in=burn_in, init_step=steps)
     print(np.sum(kr.inner_results.is_accepted.numpy()/num_samples))
 
 
@@ -127,6 +130,12 @@ def setup_and_run_hmc(threadid):
     np.save('data/length_switch_' + str(threadid) + '.npy',lengths)
     amps = mover.get_amplitude_samples()
     np.save('data/amp_switch_' + str(threadid) + '.npy',amps)
+
+    for i in range(len(mover.kernel_params)):
+        output = mover.samples_[i].numpy()
+        np.save('data/all_switch_' + str(i) + '_' + str(threadid) + '.npy',output)
+
+
     print(threadid,end - start)
 
 
