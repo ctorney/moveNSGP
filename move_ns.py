@@ -262,7 +262,7 @@ class moveNS():
             #L_ls = tf.linalg.cholesky(K_ls.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=np.float64) * self.jitter_level)
             #f_ls = tf.matmul((L_ls), tf.expand_dims(ls_latents,-1))
 
-            latent_lengths = tfd.GaussianProcessRegressionModel(kernel = K_ls, index_points = segT, observations = ls_latents[:,0], observation_index_points=self.Z_).sample()
+            latent_lengths = tfd.GaussianProcessRegressionModel(kernel = K_ls, index_points = segT, observations = ls_latents, observation_index_points=self.Z_).mean()
             
             
         else:
@@ -282,7 +282,7 @@ class moveNS():
             K_amp = self.akernel(*[t(p) for t,p in zip(self.atransforms, amp_params)])
             #L_amp = tf.linalg.cholesky(K_amp.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level)
             #f_amp = tf.matmul((L_amp), tf.expand_dims(amp_latents,-1))
-            latent_amplitudes = tfd.GaussianProcessRegressionModel(kernel = K_amp, index_points = segT, observations = amp_latents[:,0], observation_index_points=self.Z_).sample()
+            latent_amplitudes = tfd.GaussianProcessRegressionModel(kernel = K_amp, index_points = segT, observations = amp_latents, observation_index_points=self.Z_).mean()
         else:
             latent_amplitudes = tf.zeros([tf.shape(segT)[0]], tf.float64) 
 
@@ -297,8 +297,8 @@ class moveNS():
             K_mean = self.mkernel(*[t(p) for t,p in zip(self.mtransforms, mean_params)])
             #L_mean = tf.linalg.cholesky(K_mean.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=np.float64) * self.jitter_level)
             #f_mean = tf.matmul((L_mean), mean_latents)
-            latent_means_x = tfd.GaussianProcessRegressionModel(kernel = K_mean, index_points = segT, observations = mean_latents[:,0], observation_index_points=self.Z_).sample()
-            latent_means_y = tfd.GaussianProcessRegressionModel(kernel = K_mean, index_points = segT, observations = mean_latents[:,1], observation_index_points=self.Z_).sample()
+            latent_means_x = tfd.GaussianProcessRegressionModel(kernel = K_mean, index_points = segT, observations = mean_latents[:,0], observation_index_points=self.Z_).mean()
+            latent_means_y = tfd.GaussianProcessRegressionModel(kernel = K_mean, index_points = segT, observations = mean_latents[:,1], observation_index_points=self.Z_).mean()
             latent_means = tf.stack([latent_means_x,latent_means_y])
         else:
             latent_means = tf.transpose(tf.zeros_like(segX))
@@ -306,7 +306,8 @@ class moveNS():
         K = self.non_stat_matern12(segT, length_scales, amplitudes)
         
         K = K + (tf.eye(tf.shape(segT)[0], dtype=np.float64) * tf.nn.softplus(noise_variance))
-        gp = tfd.MultivariateNormalFullCovariance(loc = latent_means, covariance_matrix = K)
+        
+        gp = tfd.MultivariateNormalTriL(loc = latent_means, scale_tril = tf.linalg.cholesky(K))
 
         log_prob_value = tf.reduce_sum(gp.log_prob(tf.transpose(segX)))
         gradients =  tf.gradients(log_prob_value, kernel_params)
@@ -359,12 +360,12 @@ class moveNS():
 
     def get_amplitude_batch(self, amp_mean_sample, amp_latents_sample, amp_params, X=None):
 
-        kernel_batches = self.akernel(*[tf.cast(t(p),tf.float64) for t,p in zip(self.atransforms, amp_params)])
-        K_batch = kernel_batches.matrix(self.Z_,self.Z_)
-        L_batch = (tf.linalg.cholesky(K_batch + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level))#, perm=[0,2,1])
-        f_batch =  tf.matmul(tf.cast(L_batch,tf.float64), tf.expand_dims(tf.cast(amp_latents_sample,tf.float64),-1))
+        f_batch = tf.expand_dims(tf.cast(amp_latents_sample,tf.float64),-1)
+
         if X is not None:
-            f_batch = tf.expand_dims(tfd.GaussianProcessRegressionModel(kernel = kernel_batches, index_points = X, observations = f_batch[...,0], observation_index_points=self.Z_).sample(),-1)
+            kernel_batches = self.akernel(*[tf.cast(t(p),tf.float64) for t,p in zip(self.atransforms, amp_params)])
+            K_batch = kernel_batches.matrix(self.Z_,self.Z_)
+            f_batch = tf.expand_dims(tfd.GaussianProcessRegressionModel(kernel = kernel_batches, index_points = X, observations = f_batch[...,0], observation_index_points=self.Z_).mean(),-1)
         
         f_batch = tf.nn.softplus(f_batch + tf.expand_dims(tf.expand_dims(tf.cast(amp_mean_sample,tf.float64),-1),-1))
         
@@ -393,13 +394,12 @@ class moveNS():
             return np.log(np.exp(self.samples_[self.l_start])+1.0)
 
     def get_lengthscale_batch(self, ls_mean_sample, ls_latents_sample, ls_params, X=None):
-
-        kernel_batches = self.lkernel(*[tf.cast(t(p),tf.float64) for t,p in zip(self.ltransforms, ls_params)])
-        K_batch = kernel_batches.matrix(self.Z_,self.Z_)
-        L_batch = tf.linalg.cholesky(K_batch + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level)
-        f_batch =  tf.matmul(tf.cast(L_batch,tf.float64), tf.expand_dims(tf.cast(ls_latents_sample,tf.float64),-1))
+    
+        f_batch = tf.expand_dims(tf.cast(ls_latents_sample,tf.float64),-1)
         if X is not None:
-            f_batch = tf.expand_dims(tfd.GaussianProcessRegressionModel(kernel = kernel_batches, index_points = X, observations = f_batch[...,0], observation_index_points=self.Z_).sample(),-1)
+            kernel_batches = self.lkernel(*[tf.cast(t(p),tf.float64) for t,p in zip(self.ltransforms, ls_params)])
+            K_batch = kernel_batches.matrix(self.Z_,self.Z_)
+            f_batch = tf.expand_dims(tfd.GaussianProcessRegressionModel(kernel = kernel_batches, index_points = X, observations = f_batch[...,0], observation_index_points=self.Z_).mean(),-1)
         
         f_batch = tf.nn.softplus(f_batch + tf.expand_dims(tf.expand_dims(tf.cast(ls_mean_sample,tf.float64),-1),-1))
         
@@ -426,14 +426,14 @@ class moveNS():
 
     def get_mean_batch(self, mean_latents_sample, mean_params,X=None):
 
-        kernel_batches = self.mkernel(*[tf.cast(t(p),tf.float64) for t,p in zip(self.mtransforms, mean_params)])
-        K_batch = kernel_batches.matrix(self.Z_,self.Z_)
-        L_batch = tf.linalg.cholesky(K_batch + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level)
-
-        f_batch = tf.matmul(tf.cast(L_batch,tf.float64), tf.cast(mean_latents_sample,tf.float64))
+        
+        f_batch = tf.cast(mean_latents_sample,tf.float64)
         if X is not None:
-            f_batch_x = tfd.GaussianProcessRegressionModel(kernel = kernel_batches, index_points = X, observations = f_batch[...,0], observation_index_points=self.Z_).sample()
-            f_batch_y = tfd.GaussianProcessRegressionModel(kernel = kernel_batches, index_points = X, observations = f_batch[...,1], observation_index_points=self.Z_).sample()
+            kernel_batches = self.mkernel(*[tf.cast(t(p),tf.float64) for t,p in zip(self.mtransforms, mean_params)])
+            K_batch = kernel_batches.matrix(self.Z_,self.Z_)
+        
+            f_batch_x = tfd.GaussianProcessRegressionModel(kernel = kernel_batches, index_points = X, observations = f_batch[...,0], observation_index_points=self.Z_).mean()
+            f_batch_y = tfd.GaussianProcessRegressionModel(kernel = kernel_batches, index_points = X, observations = f_batch[...,1], observation_index_points=self.Z_).mean()
             f_batch = tf.stack([f_batch_x, f_batch_y],axis=-1)
 
         return f_batch
