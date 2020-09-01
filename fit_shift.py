@@ -25,13 +25,13 @@ def setup_and_run_hmc(threadid):
         # softplus transform with shift 
         return tf.nn.softplus(x)+1e-4
 
-    def local_periodic_kernel(x1,x2):
+    def local_periodic_kernel(x1):
         # locally periodic kernel with single variable parameter. Other parameters are set 
         # to encode annual activity pattern (period=365), RBF kernel is set to allow for 
         # slow varying mean locations (2-year lengthscale).
         
-        k1 = tfp.math.psd_kernels.ExpSinSquared(x1,x2,np.float64(365.0))
-        k2 = tfp.math.psd_kernels.ExponentiatedQuadratic(np.float64(1.0),np.float64(2*365.0))
+        k1 = tfp.math.psd_kernels.ExpSinSquared(x1,np.float64(1.0),np.float64(365.0))
+        k2 = tfp.math.psd_kernels.ExponentiatedQuadratic(np.float64(1.0),np.float64(1*365.0))
         #k1 = tfp.math.psd_kernels.ExpSinSquared(x1,np.float64(0.5),np.float64(365.0))
         #k2 = tfp.math.psd_kernels.ExponentiatedQuadratic(np.float64(1.0),x2*np.float64(365.0))
         #k2 = tfp.math.psd_kernels.ExponentiatedQuadratic(x2,np.float64(2*365.0))
@@ -39,20 +39,20 @@ def setup_and_run_hmc(threadid):
 
 
     # initial value of kernel parameters
-    mparams_init=[5.0,0.0] 
+    mparams_init=[6.0] 
     #mparams_init=[5.0,4.0] 
-    lparams_init=[0.0]
-    aparams_init=[0.0]
+    lparams_init=[5.0]
+    aparams_init=[-1.0]
 
     # prior distribution on parameters - changed to 20 
-    lpriors = [tfd.Normal(loc = np.float64(0.),scale=np.float64(0.10))]
-    apriors = [tfd.Normal(loc = np.float64(-1.),scale=np.float64(0.10))]
+    lpriors = [tfd.Normal(loc = np.float64(5.),scale=np.float64(1))]
+    apriors = [tfd.Normal(loc = np.float64(-1.),scale=np.float64(1))]
 
     # transform for parameter to ensure positive
-    mtransforms=[sp, sp] 
+    mtransforms=[sp] 
 
     # prior distribution on parameter 
-    mpriors = [tfd.Normal(loc=np.float64(0.), scale=np.float64(100.0)), tfd.Normal(loc=np.float64(0.), scale=np.float64(100.0))]
+    mpriors = [tfd.Normal(loc=np.float64(6.), scale=np.float64(0.1))]#, tfd.Normal(loc=np.float64(0.), scale=np.float64(0.1))]
 
     # create the model 
     mover = moveNS(T,X,Z, BATCH_SIZE=1000, MIN_REMAIN=910,
@@ -71,7 +71,7 @@ def setup_and_run_hmc(threadid):
         with tf.name_scope('build_trainable_location_scale_distribution'):
             dtype = tf.float32
             initial_loc = initial_loc * tf.ones(tf.shape(initial_scale), dtype=dtype)
-            initial_scale = initial_scale * tf.ones_like(initial_loc)
+            initial_scale = tf.nn.softplus(initial_scale * tf.ones_like(initial_loc))
             loc = tf.Variable(initial_value=initial_loc, name='loc')
             scale=tfp.util.TransformedVariable(tf.Variable(initial_scale, name='scale'), tfp.bijectors.Softplus())
             posterior_dist = tfd.Normal(loc=loc, scale=scale)
@@ -100,7 +100,7 @@ def setup_and_run_hmc(threadid):
 
 
     start = time.time()
-    losses = tfp.vi.fit_surrogate_posterior(target_log_prob_fn, surrogate_posterior,optimizer=tf.optimizers.Adam(learning_rate=0.1, beta_2=0.9), num_steps=150)
+    losses = tfp.vi.fit_surrogate_posterior(target_log_prob_fn, surrogate_posterior,optimizer=tf.optimizers.Adam(learning_rate=0.1, beta_2=0.9), num_steps=1)#4000)#0000)
 
 
     steps = []
@@ -108,27 +108,29 @@ def setup_and_run_hmc(threadid):
     
     for i in range(len(mover.kernel_params)):
         stdstep = surrogate_posterior.stddev()[i].numpy()
+        #print(threadid,i,stdstep)
+        meanp = surrogate_posterior.mean()[i].numpy()
+        mover.kernel_params[i].assign(meanp)
         if stdstep.max()>max_step:
             max_step = stdstep.max()
-        print(stdstep.max())
-        print(max_step)
         steps.append(stdstep)
 
     steps = [(1e-2/max_step)*s for s in steps] 
+    steps = [1e-2 for s in steps] 
 
     start = time.time()
 
     # sample from the posterior
-    num_samples=20
-    burn_in=10
-    kr = amover.hmc_sample(num_samples=num_samples, skip=0, burn_in=burn_in, init_step=steps)
+    num_samples=2000#000##000#0
+    burn_in=500#000#4#000#5000
+    kr = mover.hmc_sample(num_samples=num_samples, skip=4, num_leapfrog_steps=8, burn_in=burn_in, init_step=steps)
     print(np.sum(kr.inner_results.is_accepted.numpy()/num_samples))
 
     end = time.time()
 
     means_z = mover.get_mean_samples() + mean_x
     np.save('data/mean_shift_z_' + str(threadid) + '.npy',means_z)
-    means = mover.get_mean_samples(X=T[::4]) + mean_x
+    means = mover.get_mean_samples(X=T[::1]) + mean_x
     np.save('data/mean_shift_' + str(threadid) + '.npy',means)
     lengths = mover.get_lengthscale_samples()
     np.save('data/length_shift_' + str(threadid) + '.npy',lengths)
@@ -136,6 +138,9 @@ def setup_and_run_hmc(threadid):
     np.save('data/amp_shift_' + str(threadid) + '.npy',amps)
     obs_noise_samples = tf.nn.softplus(mover.samples_[0]).numpy()
     np.save('data/obs_shift_' + str(threadid) + '.npy',obs_noise_samples)
+    for i in range(len(mover.kernel_params)):
+        output = mover.samples_[i].numpy()
+        np.save('data/all_shift_' + str(i) + '_' + str(threadid) + '.npy',output)
     print(threadid,end - start)
 
 
@@ -165,7 +170,7 @@ T=T[:,None]
 
 
 
-z_skip=4
+z_skip=20
 Z = T[::z_skip].copy()
 np.random.shuffle(Z)
 
