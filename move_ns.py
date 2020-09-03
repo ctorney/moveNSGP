@@ -70,7 +70,7 @@ class moveNS():
                 LAST_X = XX[i*BATCH_SIZE:(i+1)*BATCH_SIZE]
 
                 sz = LAST_T.shape[0]
-                if sz>MIN_REMAIN:
+                if sz>=MIN_REMAIN:
                     e = MIN_REMAIN*(sz//MIN_REMAIN) # only take batches that are multiple of MIN_REMAIN
                     self.T_.append(tf.convert_to_tensor(LAST_T[:e], dtype=tf.float64))
                     self.X_.append(tf.convert_to_tensor(LAST_X[:e], dtype=tf.float64))
@@ -223,7 +223,8 @@ class moveNS():
                 K_mean = self.mkernel(*[t(p) for t,p in zip(self.mtransforms, mean_params)])
                 L_mean = tf.linalg.cholesky(K_mean.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level)
                     
-                mean_gp_prior = tfd.MultivariateNormalTriL(scale_tril=L_mean).log_prob(mean_latents)
+                mean_gp_prior = tfd.MultivariateNormalTriL(scale_tril=L_mean).log_prob(mean_latents[...,0]) + \
+                                    tfd.MultivariateNormalTriL(scale_tril=L_mean).log_prob(mean_latents[...,1])
 
                 for p, t, a in zip(self.mpriors, self.mtransforms, mean_params):
                     ret_val += p.log_prob((a))
