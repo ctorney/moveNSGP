@@ -196,7 +196,8 @@ class moveNS():
                 K_ls = self.lkernel(*[t(p) for t,p in zip(self.ltransforms, ls_params)])
                 L_ls = tf.linalg.cholesky(K_ls.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level)
 
-                ls_gp_prior = tfd.MultivariateNormalTriL(loc = ls_mean, scale_tril=L_ls).log_prob(ls_latents)
+                # ls_gp_prior = tfd.MultivariateNormalTriL(loc = ls_mean, scale_tril=L_ls).log_prob(ls_latents)
+                ls_gp_prior = tfd.MultivariateNormalTriL(scale_tril=L_ls).log_prob(ls_latents)
                 ret_val = ret_val + ls_gp_prior
                 for p, t, a in zip(self.lpriors[1:], self.ltransforms, ls_params):
                     ret_val += p.log_prob((a))
@@ -209,7 +210,8 @@ class moveNS():
 
                 K_amp = self.akernel(*[t(p) for t,p in zip(self.atransforms, amp_params)])
                 L_amp = tf.linalg.cholesky(K_amp.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level)
-                amp_gp_prior = tfd.MultivariateNormalTriL(loc = amp_mean, scale_tril=L_amp).log_prob(amp_latents)
+                # amp_gp_prior = tfd.MultivariateNormalTriL(loc = amp_mean, scale_tril=L_amp).log_prob(amp_latents)
+                amp_gp_prior = tfd.MultivariateNormalTriL(scale_tril=L_amp).log_prob(amp_latents)
 
                 ret_val = ret_val + amp_gp_prior
                 for p, t, a in zip(self.apriors[1:], self.atransforms, amp_params):
