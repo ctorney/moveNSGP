@@ -32,49 +32,25 @@ class moveNS():
 
 
         self.jitter_level = 1e-6
-        self.T = T 
-        self.X = X
-        self.Z = Z
-
-        self.Z_ = tf.convert_to_tensor(value=Z, dtype=tf.float64)
+        
+        self.BATCH_SIZE=BATCH_SIZE
+        if MIN_REMAIN is None:
+            self.MIN_REMAIN=BATCH_SIZE
+        else:
+            self.MIN_REMAIN=MIN_REMAIN
+        self.velocity=velocity
+        
+        self.set_data(X,T,Z,ID)
+        
 
         # a helper function to apply the custom gradient decorator to the log posterior
         self.log_posterior = tf.custom_gradient(lambda *x: moveNS._log_posterior(self, *x))
 
-        if ID is None:
-            ID = np.zeros(T.shape[0])
-
-        if MIN_REMAIN is None:
-            MIN_REMAIN=BATCH_SIZE
-
-        self.T_ = []
-        self.X_ = []
-        
-        for j in np.unique(ID):
-            XX = X[ID==j].copy()
-            TT = T[ID==j].copy()
-            if velocity:
-                XX = np.diff(XX,axis=0)/np.diff(TT,axis=0) # convert positions to velocities using a finite difference
-                TT = TT[:-1]+np.diff(TT,axis=0)/2 # velocity corresponds to the centre of the time interval
-
-            for i in range(0,len(TT)//BATCH_SIZE):
-                self.T_.append(tf.convert_to_tensor(TT[i*BATCH_SIZE:(i+1)*BATCH_SIZE], dtype=tf.float64))
-                self.X_.append(tf.convert_to_tensor(XX[i*BATCH_SIZE:(i+1)*BATCH_SIZE], dtype=tf.float64))
-
-            i = len(TT)//BATCH_SIZE
-            LAST_T = TT[i*BATCH_SIZE:(i+1)*BATCH_SIZE]
-            LAST_X = XX[i*BATCH_SIZE:(i+1)*BATCH_SIZE]
-
-            sz = LAST_T.shape[0]
-            if sz>=MIN_REMAIN:
-                e = MIN_REMAIN*(sz//MIN_REMAIN) # only take batches that are multiple of MIN_REMAIN
-                self.T_.append(tf.convert_to_tensor(LAST_T[:e], dtype=tf.float64))
-                self.X_.append(tf.convert_to_tensor(LAST_X[:e], dtype=tf.float64))
-
         # measurement noise variance
-        self.noise_variance = tf.Variable(mean_obs_noise, dtype=tf.float64, name='obs_noise_variance')
         
         if std_obs_noise==0:
+            self.noise_variance = tf.constant(mean_obs_noise, dtype=tf.float64, name='obs_noise_variance')
+
             self.noise_prior = None
             self.kernel_params = []
 
@@ -82,6 +58,8 @@ class moveNS():
             self.a_start=1
             self.m_start=2
         else:
+            self.noise_variance = tf.Variable(mean_obs_noise, dtype=tf.float64, name='obs_noise_variance')
+            
             self.noise_prior = tfd.Normal(loc = np.float64(mean_obs_noise),scale=np.float64(std_obs_noise))
             self.kernel_params = [self.noise_variance]
 
@@ -90,39 +68,34 @@ class moveNS():
             self.m_start=3
 
         # add the parameters for the lengthscale kernel
-        self.kernel_params.append(tf.Variable(lparams_init[0], dtype=tf.float64, name='ls_mean'))
         self.lpriors=lpriors
         if lkernel:
             self.lkernel=lkernel
             self.kernel_params.append(tf.Variable(tf.zeros([tf.shape(input=self.Z_)[0]],dtype=tf.float64), dtype=tf.float64, name='v_ls_latents'))
-            self.a_start+=1
-            self.m_start+=1
-            for initializer in lparams_init[1:]:
+            for initializer in lparams_init:
                 self.kernel_params.append(tf.Variable((initializer), dtype=tf.float64))
                 self.a_start+=1
                 self.m_start+=1
             self.ltransforms=ltransforms
-            #ls_params = [tf.cast(self.kernel_params[i],tf.float64) for i in range(self.l_start+2,self.a_start)]
-            #K_ls = self.lkernel(*[t(p) for t,p in zip(self.ltransforms, ls_params)])
 
         else:
             self.lkernel=None
+            self.kernel_params.append(tf.Variable(lparams_init[0], dtype=tf.float64, name='ls_mean'))
+        
 
         # add the parameters for the amplitude kernel
-        self.kernel_params.append(tf.Variable(aparams_init[0], dtype=tf.float64, name='amp_mean'))
         self.apriors=apriors
         if akernel:
             self.akernel=akernel
             self.kernel_params.append(tf.Variable(tf.zeros([tf.shape(input=self.Z_)[0]],dtype=tf.float64), dtype=tf.float64, name='v_amp_latents'))
-            self.m_start+=1
-            for initializer in aparams_init[1:]:
+            for initializer in aparams_init:
                 self.kernel_params.append(tf.Variable((initializer), dtype=tf.float64))
                 self.m_start+=1
             self.atransforms=atransforms
-            #amp_params = [tf.cast(self.kernel_params[i],tf.float64) for i in range(self.a_start+2,self.m_start)]
-            #K_amp = self.akernel(*[t(p) for t,p in zip(self.atransforms, amp_params)])
         else:
             self.akernel=None
+            self.kernel_params.append(tf.Variable(aparams_init[0], dtype=tf.float64, name='amp_mean'))
+        
 
         # add the parameters for the mean kernel
         if mkernel:
@@ -141,7 +114,39 @@ class moveNS():
 
         if lkernel or akernel:
             self.rv_latents = tfd.MultivariateNormalDiag(loc = tf.zeros([tf.shape(input=self.Z_)[0]], dtype=tf.float64))
+    
+    def set_data(self,X,T,Z,ID):
+        self.Z_ = tf.convert_to_tensor(value=Z, dtype=tf.float64)
+        if ID is None:
+            ID = np.zeros(T.shape[0])
 
+
+        self.T_ = []
+        self.X_ = []
+        
+        for j in np.unique(ID):
+            XX = X[ID==j].copy()
+            TT = T[ID==j].copy()
+            if self.velocity:
+                XX = np.diff(XX,axis=0)/np.diff(TT,axis=0) # convert positions to velocities using a finite difference
+                TT = TT[:-1]+np.diff(TT,axis=0)/2 # velocity corresponds to the centre of the time interval
+
+            for i in range(0,len(TT)//self.BATCH_SIZE):
+                self.T_.append(tf.convert_to_tensor(TT[i*self.BATCH_SIZE:(i+1)*self.BATCH_SIZE], dtype=tf.float64))
+                self.X_.append(tf.convert_to_tensor(XX[i*self.BATCH_SIZE:(i+1)*self.BATCH_SIZE], dtype=tf.float64))
+
+            i = len(TT)//self.BATCH_SIZE
+            LAST_T = TT[i*self.BATCH_SIZE:(i+1)*self.BATCH_SIZE]
+            LAST_X = XX[i*self.BATCH_SIZE:(i+1)*self.BATCH_SIZE]
+
+            sz = LAST_T.shape[0]
+            if sz>=self.MIN_REMAIN:
+                e = self.MIN_REMAIN*(sz//self.MIN_REMAIN) # only take batches that are multiple of MIN_REMAIN
+                self.T_.append(tf.convert_to_tensor(LAST_T[:e], dtype=tf.float64))
+                self.X_.append(tf.convert_to_tensor(LAST_X[:e], dtype=tf.float64))
+
+        
+        
             
     ##########################################################################################################
     #                                                                                                        #
@@ -183,53 +188,59 @@ class moveNS():
                 grad_tape.watch(kp)
 
             # unpack
-            ls_mean = kernel_params[self.l_start]
-            amp_mean = kernel_params[self.a_start]
-
-            if self.noise_prior is None:
-                #noise_variance = tf.cast(self.noise_variance,tf.float64)
-                #noise_variance = tf.cast(kernel_params[0],tf.float64)
-                ret_val = self.lpriors[0].log_prob(ls_mean)
-                ret_val += self.apriors[0].log_prob(amp_mean)
-
-            else:
-                noise_variance = kernel_params[0]
             
+            if self.noise_prior is not None:
+                noise_variance = kernel_params[0]
                 ret_val = self.noise_prior.log_prob(noise_variance)
-                ret_val += self.lpriors[0].log_prob(ls_mean)
-                ret_val += self.apriors[0].log_prob(amp_mean)
 
             # lengthscale kernel if present
             if self.lkernel:
-                ls_mean = kernel_params[self.l_start]
-                ls_latents = kernel_params[self.l_start+1]
-                ls_params = [kernel_params[i] for i in range(self.l_start+2,self.a_start)]
+                ls_latents = kernel_params[self.l_start]
+                #lmean = tf.reduce_mean(ls_latents)
+                #ls_latents=ls_latents-lmean
+                ls_params = [kernel_params[i] for i in range(self.l_start+1,self.a_start)]
 
                 K_ls = self.lkernel(*[t(p) for t,p in zip(self.ltransforms, ls_params)])
                 L_ls = tf.linalg.cholesky(K_ls.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level)
 
                 f_ls = tf.matmul((L_ls), tf.expand_dims(ls_latents,-1))
-                # ls_gp_prior = tfd.MultivariateNormalTriL(loc = ls_mean, scale_tril=L_ls).log_prob(ls_latents)
-                ls_gp_prior = tfd.MultivariateNormalTriL(scale_tril=L_ls).log_prob(f_ls[:,0])
-                ret_val = ret_val + ls_gp_prior
+                ls_gp_prior = tfd.MultivariateNormalTriL(loc=tf.reduce_mean(f_ls),scale_tril=L_ls).log_prob(f_ls[:,0])
+                #ls_gp_prior = tfd.MultivariateNormalTriL(scale_tril=L_ls).log_prob(f_ls[:,0])
+                if self.noise_prior is None:
+                    ret_val = ls_gp_prior
+                else:
+                    ret_val = ret_val + ls_gp_prior
                 for p, t, a in zip(self.lpriors[1:], self.ltransforms, ls_params):
                     ret_val += p.log_prob((a))
+            else:
+                ls_mean = kernel_params[self.l_start]
+                if self.noise_prior is None:
+                    ret_val = self.lpriors[0].log_prob(ls_mean)
+                else:
+                    ret_val = ret_val + self.lpriors[0].log_prob(ls_mean)
+
+                
+            
 
             # amplitude kernel if present
             if self.akernel:
-                amp_mean = kernel_params[self.a_start]
-                amp_latents = kernel_params[self.a_start+1]
-                amp_params = [kernel_params[i] for i in range(self.a_start+2,self.m_start)]
+                #amp_mean = kernel_params[self.a_start]
+                amp_latents = kernel_params[self.a_start]
+                amp_params = [kernel_params[i] for i in range(self.a_start+1,self.m_start)]
 
                 K_amp = self.akernel(*[t(p) for t,p in zip(self.atransforms, amp_params)])
                 L_amp = tf.linalg.cholesky(K_amp.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level)
                 # amp_gp_prior = tfd.MultivariateNormalTriL(loc = amp_mean, scale_tril=L_amp).log_prob(amp_latents)
                 f_amp = tf.matmul((L_amp), tf.expand_dims(amp_latents,-1))
-                amp_gp_prior = tfd.MultivariateNormalTriL(scale_tril=L_amp).log_prob(f_amp[:,0])
+                amp_gp_prior = tfd.MultivariateNormalTriL(loc=tf.reduce_mean(f_amp),scale_tril=L_amp).log_prob(f_amp[:,0])
 
                 ret_val = ret_val + amp_gp_prior
                 for p, t, a in zip(self.apriors[1:], self.atransforms, amp_params):
                     ret_val += p.log_prob((a))
+            else:
+                amp_mean = kernel_params[self.a_start]
+                ret_val += self.apriors[0].log_prob(amp_mean)
+
 
             # mean kernel if present
             if self.mkernel:
@@ -272,41 +283,53 @@ class moveNS():
             noise_variance = self.noise_variance
         else:
             noise_variance = kernel_params[0]
-        ls_mean = kernel_params[self.l_start]
-        amp_mean = kernel_params[self.a_start]
+        
 
         if self.lkernel:
-            ls_latents = kernel_params[self.l_start+1]
-            ls_params = [kernel_params[i] for i in range(self.l_start+2,self.a_start)]
+            ls_latents = kernel_params[self.l_start]
+            #lmean = tf.reduce_mean(ls_latents)
+            #ls_latents=ls_latents-lmean
+            ls_params = [kernel_params[i] for i in range(self.l_start+1,self.a_start)]
             K_ls = self.lkernel(*[t(p) for t,p in zip(self.ltransforms, ls_params)])
             L_ls = tf.linalg.cholesky(K_ls.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=np.float64) * self.jitter_level)
             f_ls = tf.matmul((L_ls), tf.expand_dims(ls_latents,-1))
 
-            latent_lengths = tfd.GaussianProcessRegressionModel(kernel = K_ls, index_points = segT, observations = f_ls[:,0], observation_index_points=self.Z_).mean()
-            
+            latent_lengths = tfd.GaussianProcessRegressionModel(kernel = K_ls,
+                                                                mean_fn = lambda _: tf.reduce_mean(f_ls),
+                                                                index_points = segT, 
+                                                                observations = f_ls[:,0], 
+                                                                observation_index_points=self.Z_).mean()
+            full_lengthscales = latent_lengths#+lmean
             
         else:
+            ls_mean = kernel_params[self.l_start]
             latent_lengths = tf.zeros([tf.shape(segT)[0]], tf.float64) 
 
 
-        full_lengthscales = tf.add(ls_mean,latent_lengths)
-        length_scales = tf.nn.softplus(full_lengthscales)
+            full_lengthscales = tf.add(ls_mean,latent_lengths)
+        length_scales = tf.math.exp(full_lengthscales)
         length_scales = tf.expand_dims(length_scales,-1)
 
         if self.akernel:
-            amp_latents = kernel_params[self.a_start+1]
-            amp_params = [kernel_params[i] for i in range(self.a_start+2,self.m_start)]
+            amp_latents = kernel_params[self.a_start]
+            amp_params = [kernel_params[i] for i in range(self.a_start+1,self.m_start)]
             K_amp = self.akernel(*[t(p) for t,p in zip(self.atransforms, amp_params)])
             L_amp = tf.linalg.cholesky(K_amp.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level)
             f_amp = tf.matmul((L_amp), tf.expand_dims(amp_latents,-1))
-            latent_amplitudes = tfd.GaussianProcessRegressionModel(kernel = K_amp, index_points = segT, observations = f_amp[:,0], observation_index_points=self.Z_).mean()
-        
-            #latent_amplitudes = tfd.GaussianProcessRegressionModel(kernel = K_amp, index_points = segT, observations = amp_latents, observation_index_points=self.Z_).mean()
+            latent_amplitudes = tfd.GaussianProcessRegressionModel(kernel = K_amp, 
+                                                                   mean_fn = lambda _: tf.reduce_mean(f_amp),
+                                                                   index_points = segT, 
+                                                                   observations = f_amp[:,0], 
+                                                                   observation_index_points=self.Z_).mean()
+            full_amplitudes = latent_amplitudes
+
         else:
             latent_amplitudes = tf.zeros([tf.shape(segT)[0]], tf.float64) 
+            amp_mean = kernel_params[self.a_start]
 
-        full_amplitudes = tf.add(amp_mean,latent_amplitudes)
-        amplitudes = tf.nn.softplus(full_amplitudes)
+
+            full_amplitudes = tf.add(amp_mean,latent_amplitudes)
+        amplitudes = tf.math.exp(full_amplitudes)
         amplitudes = tf.expand_dims(amplitudes,-1)
 
         if self.mkernel:
@@ -315,14 +338,16 @@ class moveNS():
             K_mean = self.mkernel(*[t(p) for t,p in zip(self.mtransforms, mean_params)])
             L_mean = tf.linalg.cholesky(K_mean.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=np.float64) * self.jitter_level)
             f_mean = tf.matmul((L_mean), mean_latents)
-            latent_means_x = tfd.GaussianProcessRegressionModel(kernel = K_mean, index_points = segT, observations = f_mean[:,0], observation_index_points=self.Z_).mean()
-            latent_means_y = tfd.GaussianProcessRegressionModel(kernel = K_mean, index_points = segT, observations = f_mean[:,1], observation_index_points=self.Z_).mean()
+            latent_means_x = tfd.GaussianProcessRegressionModel(kernel = K_mean, 
+                                                                index_points = segT, 
+                                                                observations = f_mean[:,0], 
+                                                                observation_index_points=self.Z_).mean()
+            latent_means_y = tfd.GaussianProcessRegressionModel(kernel = K_mean, 
+                                                                index_points = segT,
+                                                                observations = f_mean[:,1], 
+                                                                observation_index_points=self.Z_).mean()
             latent_means = tf.stack([latent_means_x,latent_means_y])
-            #L_mean = tf.linalg.cholesky(K_mean.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level)
-            #f_mean = tf.matmul((L_mean), mean_latents)
-            #latent_means_x = tfd.GaussianProcessRegressionModel(kernel = K_mean, index_points = segT, observations = mean_latents[:,0], observation_index_points=self.Z_).mean()
-            #latent_means_y = tfd.GaussianProcessRegressionModel(kernel = K_mean, index_points = segT, observations = mean_latents[:,1], observation_index_points=self.Z_).mean()
-            #latent_means = tf.stack([latent_means_x,latent_means_y])
+            
         else:
             latent_means = tf.transpose(tf.zeros_like(segX))
 
@@ -363,9 +388,8 @@ class moveNS():
 
         if self.akernel:
 
-            amp_mean = self.kernel_params[self.a_start]
-            amp_latents = self.kernel_params[self.a_start+1]
-            amp_params = [self.kernel_params[i] for i in range(self.a_start+2,self.m_start)]
+            amp_latents = self.kernel_params[self.a_start]
+            amp_params = [self.kernel_params[i] for i in range(self.a_start+1,self.m_start)]
 
             K_amp = self.akernel(*[t(p) for t,p in zip(self.atransforms, amp_params)])
             L_amp = tf.linalg.cholesky(K_amp.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level)
@@ -374,34 +398,41 @@ class moveNS():
             if X is None:
                 latent_amplitudes = f_amp
             else:
-                latent_amplitudes = tfd.GaussianProcessRegressionModel(kernel = K_amp, index_points = X, observations = f_amp[:,0], observation_index_points=self.Z_).mean()
-            full_amplitudes = tf.add(amp_mean,latent_amplitudes)
-            amplitudes = tf.nn.softplus(full_amplitudes)
+                latent_amplitudes = tfd.GaussianProcessRegressionModel(kernel = K_amp,
+                                                                       mean_fn = lambda _: tf.reduce_mean(f_amp),
+                                                                       index_points = X, 
+                                                                       observations = f_amp[:,0],
+                                                                       observation_index_points=self.Z_).mean()
+            amplitudes = tf.math.exp(latent_amplitudes)
             return amplitudes.numpy()
         else:
-            return np.log(np.exp(self.kernel_params[self.a_start])+1.0)
+            return np.exp(self.kernel_params[self.a_start].numpy())
 
     def get_lengthscale(self, X=None):
 
         if self.lkernel:
 
-            len_mean = self.kernel_params[self.l_start]
-            len_latents = self.kernel_params[self.l_start+1]
-            len_params = [self.kernel_params[i] for i in range(self.l_start+2,self.a_start)]
+            len_latents = self.kernel_params[self.l_start]
+            #lmean = tf.reduce_mean(len_latents)
+            #len_latents=len_latents-lmean
+            len_params = [self.kernel_params[i] for i in range(self.l_start+1,self.a_start)]
 
-            K_len = self.akernel(*[t(p) for t,p in zip(self.ltransforms, len_params)])
+            K_len = self.lkernel(*[t(p) for t,p in zip(self.ltransforms, len_params)])
             L_len = tf.linalg.cholesky(K_len.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level)
             f_len = tf.matmul((L_len), tf.expand_dims(len_latents,-1))
         
             if X is None:
-                latent_lengths = f_len
+                latent_lengths = f_len# + lmean
             else:
-                latent_lengths = tfd.GaussianProcessRegressionModel(kernel = K_len, index_points = X, observations = f_len[:,0], observation_index_points=self.Z_).mean()
-            full_lengths = tf.add(len_mean,latent_lengths)
-            lengths = tf.nn.softplus(full_lengths)
+                latent_lengths = tfd.GaussianProcessRegressionModel(kernel = K_len, 
+                                                                    mean_fn = lambda _: tf.reduce_mean(f_len),
+                                                                    index_points = X, 
+                                                                    observations = f_len[:,0], 
+                                                                    observation_index_points=self.Z_).mean()# + lmean
+            lengths = tf.math.exp(latent_lengths)
             return lengths.numpy()
         else:
-            return np.log(np.exp(self.kernel_params[self.l_start])+1.0)
+            return np.exp(self.kernel_params[self.l_start].numpy())
 
     def get_mean(self, X=None):
 
@@ -431,33 +462,36 @@ class moveNS():
 
         if self.akernel:
             if X is None:
-                amp_function = np.zeros((self.num_samples,np.shape(self.Z)[0],1))
+                amp_function = np.zeros((self.num_samples,np.shape(self.Z_.numpy())[0],1))
             else:
                 amp_function = np.zeros((self.num_samples,np.shape(X)[0],1))
 
             for i in range(0,self.num_samples,batch_sz):
-                amp_mean_sample = self.samples_[self.a_start][i:i+batch_sz]
-                amp_latents_sample = self.samples_[self.a_start+1][i:i+batch_sz]
+                amp_latents_sample = self.samples_[self.a_start][i:i+batch_sz]
                 amp_params = []
                 for j in range(len(self.atransforms)):
-                    amp_params.append(self.samples_[self.a_start+2+j][i:i+batch_sz])
+                    amp_params.append(self.samples_[self.a_start+1+j][i:i+batch_sz])
 
-                amp_function[i:i+batch_sz] = self.get_amplitude_batch(amp_mean_sample, amp_latents_sample, amp_params, X)
+                amp_function[i:i+batch_sz] = self.get_amplitude_batch(amp_latents_sample, amp_params, X)
 
             return amp_function
         else:
-            return np.log(np.exp(self.samples_[self.a_start])+1.0)
+            return np.exp(self.samples_[self.a_start].numpy())
 
-    def get_amplitude_batch(self, amp_mean_sample, amp_latents_sample, amp_params, X=None):
+    def get_amplitude_batch(self, amp_latents_sample, amp_params, X=None):
 
         kernel_batches = self.akernel(*[tf.cast(t(p),tf.float64) for t,p in zip(self.atransforms, amp_params)])
         K_batch = kernel_batches.matrix(self.Z_,self.Z_)
         L_batch = (tf.linalg.cholesky(K_batch + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level))#, perm=[0,2,1])
         f_batch =  tf.matmul(tf.cast(L_batch,tf.float64), tf.expand_dims(tf.cast(amp_latents_sample,tf.float64),-1))
         if X is not None:
-            f_batch = tf.expand_dims(tfd.GaussianProcessRegressionModel(kernel = kernel_batches, index_points = X, observations = f_batch[...,0], observation_index_points=self.Z_).mean(),-1)
+            f_batch = tf.expand_dims(tfd.GaussianProcessRegressionModel(kernel = kernel_batches,
+                                                                        mean_fn = lambda _: tf.reduce_mean(f_batch),
+                                                                        index_points = X, 
+                                                                        observations = f_batch[...,0],
+                                                                        observation_index_points=self.Z_).mean(),-1)
         
-        f_batch = tf.nn.softplus(f_batch + tf.expand_dims(tf.expand_dims(tf.cast(amp_mean_sample,tf.float64),-1),-1))
+        f_batch = tf.math.exp(f_batch)# + tf.expand_dims(tf.expand_dims(tf.cast(amp_mean_sample,tf.float64),-1),-1))
         
         return f_batch.numpy()
 
@@ -466,35 +500,38 @@ class moveNS():
         if self.lkernel:
 
             if X is None:
-                ls_function = np.zeros((self.num_samples,np.shape(self.Z)[0],1))
+                ls_function = np.zeros((self.num_samples,np.shape(self.Z_.numpy())[0],1))
             else:
                 ls_function = np.zeros((self.num_samples,np.shape(X)[0],1))
 
             for i in range(0,self.num_samples,batch_sz):
 
-                ls_mean_sample = self.samples_[self.l_start][i:i+batch_sz]
-                ls_latents_sample = self.samples_[self.l_start+1][i:i+batch_sz]
+                ls_latents_sample = self.samples_[self.l_start][i:i+batch_sz]
                 ls_params = []
                 for j in range(len(self.ltransforms)):
-                    ls_params.append(self.samples_[self.l_start+2+j][i:i+batch_sz])
+                    ls_params.append(self.samples_[self.l_start+1+j][i:i+batch_sz])
 
-                ls_function[i:i+batch_sz] = self.get_lengthscale_batch(ls_mean_sample, ls_latents_sample, ls_params, X)
+                ls_function[i:i+batch_sz] = self.get_lengthscale_batch(ls_latents_sample, ls_params, X)
 
             return ls_function
         else:
-            return np.log(np.exp(self.samples_[self.l_start])+1.0)
+            return np.exp(self.samples_[self.l_start].numpy())
 
 
-    def get_lengthscale_batch(self, ls_mean_sample, ls_latents_sample, ls_params, X=None):
+    def get_lengthscale_batch(self, ls_latents_sample, ls_params, X=None):
 
         kernel_batches = self.lkernel(*[tf.cast(t(p),tf.float64) for t,p in zip(self.ltransforms, ls_params)])
         K_batch = kernel_batches.matrix(self.Z_,self.Z_)
         L_batch = tf.linalg.cholesky(K_batch + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level)
         f_batch =  tf.matmul(tf.cast(L_batch,tf.float64), tf.expand_dims(tf.cast(ls_latents_sample,tf.float64),-1))
         if X is not None:
-            f_batch = tf.expand_dims(tfd.GaussianProcessRegressionModel(kernel = kernel_batches, index_points = X, observations = f_batch[...,0], observation_index_points=self.Z_).mean(),-1)
+            f_batch = tf.expand_dims(tfd.GaussianProcessRegressionModel(kernel = kernel_batches,
+                                                                        mean_fn = lambda _: tf.reduce_mean(f_batch),
+                                                                        index_points = X, 
+                                                                        observations = f_batch[...,0], 
+                                                                        observation_index_points=self.Z_).mean(),-1)
         
-        f_batch = tf.nn.softplus(f_batch + tf.expand_dims(tf.expand_dims(tf.cast(ls_mean_sample,tf.float64),-1),-1))
+        f_batch = tf.math.exp(f_batch)# + tf.expand_dims(tf.expand_dims(tf.cast(ls_mean_sample,tf.float64),-1),-1))
         
         return f_batch.numpy()
 
@@ -503,7 +540,7 @@ class moveNS():
         if self.mkernel:
 
             if X is None:
-                mean_function = np.zeros((self.num_samples,np.shape(self.Z)[0],2))
+                mean_function = np.zeros((self.num_samples,np.shape(self.Z_.numpy())[0],2))
             else:
                 mean_function = np.zeros((self.num_samples,np.shape(X)[0],2))
 
