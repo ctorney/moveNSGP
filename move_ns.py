@@ -21,6 +21,7 @@ from tensorflow.python.eager import tape
 
 from tensorflow_probability import distributions as tfd
 
+from mala_sampler import AdaptiveMALA
 
 class moveNS():
 
@@ -153,9 +154,54 @@ class moveNS():
     #                             Code for running the HMC sampler                                           #
     #                                                                                                        #
     ##########################################################################################################
-    def mala_sample(self, num_samples=100,skip=1,burn_in=0,num_leapfrog_steps=5,init_step=1e-3):
+    def mala_sample(self, num_samples=100,skip=1,burn_in=0,init_step=1,threshold_start_estimate=500,threshold_use_estimate=1000):
 
+        # calculate dimensions of parameter list for conversion to numpy arrays
+        dims=[]
+        for a in self.kernel_params:
+            if tf.rank(a)==0:
+                dims.append(1)
+            else:
+                dims.append(a.shape[0])
+        dims=np.cumsum(dims)[:-1]
 
+        # utility function to convert list of tf tensors to stacked numpy array
+        def to_numpy(params):
+            return np.hstack([mk.numpy() for mk in params])
+
+        # utility function to set the current state 
+        def set_state(array):
+            
+            for a, b in zip(np.split(array,dims), self.kernel_params):
+                b.assign(a.squeeze())
+            return
+            
+            
+        # calculate the log posterior and truncated drift at x
+        def log_pdf_and_drift(x):
+            delta = 1000
+            set_state(x)
+            
+            with tf.GradientTape() as t:
+                logpdf = self.log_posterior(*self.kernel_params)
+            
+            gradients = t.gradient(logpdf, self.kernel_params)
+            grad_log_pdf_x = to_numpy(gradients)
+            
+            
+            return logpdf.numpy(), delta * grad_log_pdf_x / max(delta, np.linalg.norm(grad_log_pdf_x))
+
+        initial_state= to_numpy(self.kernel_params)
+
+        sampler = AdaptiveMALA(log_pdf_and_drift=log_pdf_and_drift, 
+                                    state= initial_state,
+                                    sigma_0=init_step,
+                                    threshold_start_estimate=threshold_start_estimate,
+                                    threshold_use_estimate=threshold_use_estimate)
+
+        samples = sampler.run_sampler(num_samples,burn_in,skip)
+        self.num_samples=num_samples
+        self.samples_ = [tf.convert_to_tensor(sample_array,dtype=tf.float64) for sample_array in np.split(samples,dims,axis=-1)]
         return None
         
     
@@ -449,7 +495,7 @@ class moveNS():
                 amp_latents_sample = self.samples_[self.a_start][i:i+batch_sz]
                 amp_params = []
                 for j in range(len(self.atransforms)):
-                    amp_params.append(self.samples_[self.a_start+1+j][i:i+batch_sz])
+                    amp_params.append(self.samples_[self.a_start+1+j][i:i+batch_sz,0])
 
                 amp_function[i:i+batch_sz] = self.get_amplitude_batch(amp_latents_sample, amp_params, X)
 
@@ -488,7 +534,7 @@ class moveNS():
                 ls_latents_sample = self.samples_[self.l_start][i:i+batch_sz]
                 ls_params = []
                 for j in range(len(self.ltransforms)):
-                    ls_params.append(self.samples_[self.l_start+1+j][i:i+batch_sz])
+                    ls_params.append(self.samples_[self.l_start+1+j][i:i+batch_sz,0])
 
                 ls_function[i:i+batch_sz] = self.get_lengthscale_batch(ls_latents_sample, ls_params, X)
 
@@ -527,7 +573,7 @@ class moveNS():
                 mean_latents_sample = self.samples_[self.m_start][i:i+batch_sz]
                 mean_params = []
                 for j in range(len(self.mtransforms)):
-                    mean_params.append(self.samples_[self.m_start+1+j][i:i+batch_sz])
+                    mean_params.append(self.samples_[self.m_start+1+j][i:i+batch_sz,0])
 
                 mean_function[i:i+batch_sz] = self.get_mean_batch(mean_latents_sample, mean_params, X).numpy()
 
