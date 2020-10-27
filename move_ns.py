@@ -153,32 +153,11 @@ class moveNS():
     #                             Code for running the HMC sampler                                           #
     #                                                                                                        #
     ##########################################################################################################
-    def hmc_sample(self, num_samples=100,skip=1,burn_in=0,num_leapfrog_steps=5,init_step=1e-3,full_graph=False):
+    def mala_sample(self, num_samples=100,skip=1,burn_in=0,num_leapfrog_steps=5,init_step=1e-3):
+
+
+        return None
         
-        if full_graph:
-            log_prob_function = self.log_posterior_full_graph
-        else:
-            log_prob_function = self.log_posterior
-       
-        inner_kernel = tfp.mcmc.HamiltonianMonteCarlo(target_log_prob_fn=log_prob_function, num_leapfrog_steps=num_leapfrog_steps,step_size=init_step)#np.float32(init_step))
-        kernel = tfp.mcmc.DualAveragingStepSizeAdaptation(inner_kernel, num_adaptation_steps=int(burn_in * 0.8))#, adaptation_rate=0.1)#
-
-        self.num_samples=num_samples
-        samples, kernel_results = tfp.mcmc.sample_chain(num_results=self.num_samples,num_burnin_steps=burn_in,num_steps_between_results=skip,current_state=self.kernel_params, kernel=kernel)
-
-        self.samples_ = samples
-        return kernel_results
-
-    def nuts_sample(self, num_samples=100,skip=1,burn_in=0,init_step=1e-3,max_tree_depth=10):
-        
-        inner_kernel = tfp.mcmc.NoUTurnSampler(target_log_prob_fn=self.log_posterior, step_size=init_step,max_tree_depth=max_tree_depth)
-        kernel = tfp.mcmc.DualAveragingStepSizeAdaptation(inner_kernel, num_adaptation_steps=int(burn_in * 0.8))
-
-        self.num_samples=num_samples
-        samples, kernel_results = tfp.mcmc.sample_chain(num_results=self.num_samples, num_burnin_steps=burn_in, num_steps_between_results=skip, current_state=self.kernel_params, kernel=kernel)
-
-        self.samples_ = samples
-        return kernel_results
     
     @staticmethod
     def _log_posterior(self, *kernel_params):
