@@ -151,7 +151,7 @@ class moveNS():
             
     ##########################################################################################################
     #                                                                                                        #
-    #                             Code for running the HMC sampler                                           #
+    #                             Code for running the sampler                                           #
     #                                                                                                        #
     ##########################################################################################################
     def mala_sample(self, num_samples=100,skip=1,burn_in=0,init_step=1,threshold_start_estimate=500,threshold_use_estimate=1000):
@@ -230,7 +230,7 @@ class moveNS():
 
                 f_ls = tf.matmul((L_ls), tf.expand_dims(ls_latents,-1))
                 ls_gp_prior = tfd.MultivariateNormalTriL(loc=tf.reduce_mean(f_ls),scale_tril=L_ls).log_prob(f_ls[:,0])
-                #ls_gp_prior = tfd.MultivariateNormalTriL(scale_tril=L_ls).log_prob(f_ls[:,0])
+               
                 if self.noise_prior is None:
                     ret_val = ls_gp_prior
                 else:
@@ -255,7 +255,7 @@ class moveNS():
 
                 K_amp = self.akernel(*[t(p) for t,p in zip(self.atransforms, amp_params)])
                 L_amp = tf.linalg.cholesky(K_amp.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level)
-                # amp_gp_prior = tfd.MultivariateNormalTriL(loc = amp_mean, scale_tril=L_amp).log_prob(amp_latents)
+                
                 f_amp = tf.matmul((L_amp), tf.expand_dims(amp_latents,-1))
                 amp_gp_prior = tfd.MultivariateNormalTriL(loc=tf.reduce_mean(f_amp),scale_tril=L_amp).log_prob(f_amp[:,0])
 
@@ -276,9 +276,8 @@ class moveNS():
                 L_mean = tf.linalg.cholesky(K_mean.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level)
                 f_mean = tf.matmul((L_mean), mean_latents)
                     
-                mean_gp_prior = tfd.MultivariateNormalTriL(scale_tril=L_mean).log_prob(f_mean)
-                #mean_gp_prior = tfd.MultivariateNormalTriL(scale_tril=L_mean).log_prob(mean_latents[...,0]) + \
-                #                    tfd.MultivariateNormalTriL(scale_tril=L_mean).log_prob(mean_latents[...,1])
+                mean_gp_prior = tfd.MultivariateNormalTriL(scale_tril=L_mean).log_prob(f_mean[...,0]) + \
+                                    tfd.MultivariateNormalTriL(scale_tril=L_mean).log_prob(f_mean[...,1])
                 
                 ret_val = ret_val + mean_gp_prior
                 for p, t, a in zip(self.mpriors, self.mtransforms, mean_params):
