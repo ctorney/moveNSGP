@@ -158,37 +158,40 @@ class moveNS():
 
         # calculate dimensions of parameter list for conversion to numpy arrays
         dims=[]
+        shapes=[]
         for a in self.kernel_params:
             if tf.rank(a)==0:
                 dims.append(1)
+                shapes.append(1)
             else:
-                dims.append(a.shape[0])
+                dims.append(tf.size(a))
+                shapes.append(tf.shape(a).numpy())
         dims=np.cumsum(dims)[:-1]
 
         # utility function to convert list of tf tensors to stacked numpy array
         def to_numpy(params):
-            return np.hstack([mk.numpy() for mk in params])
+            return np.hstack([mk.numpy().flatten() for mk in params])
 
         # utility function to set the current state 
         def set_state(array):
-            
-            for a, b in zip(np.split(array,dims), self.kernel_params):
-                b.assign(a.squeeze())
+                
+            for a, b, c in zip(np.split(array,dims), self.kernel_params, shapes):
+                b.assign(np.reshape(a,c).squeeze())
             return
-            
-            
+                
+                
         # calculate the log posterior and truncated drift at x
         def log_pdf_and_drift(x):
             delta = 1000
             set_state(x)
-            
+                
             with tf.GradientTape() as t:
                 logpdf = self.log_posterior(*self.kernel_params)
-            
+                
             gradients = t.gradient(logpdf, self.kernel_params)
             grad_log_pdf_x = to_numpy(gradients)
-            
-            
+    
+                
             return logpdf.numpy(), delta * grad_log_pdf_x / max(delta, np.linalg.norm(grad_log_pdf_x))
 
         initial_state= to_numpy(self.kernel_params)
@@ -201,9 +204,10 @@ class moveNS():
 
         samples = sampler.run_sampler(num_samples,burn_in,skip)
         self.num_samples=num_samples
-        self.samples_ = [tf.convert_to_tensor(sample_array,dtype=tf.float64) for sample_array in np.split(samples,dims,axis=-1)]
-        return None
-        
+        self.samples_ = [tf.convert_to_tensor(sample_array.reshape(np.hstack((-1,shape))),dtype=tf.float64) for sample_array, shape in zip(np.split(samples,dims,axis=-1),shapes)]
+        return 
+
+
     
     @staticmethod
     def _log_posterior(self, *kernel_params):
