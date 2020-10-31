@@ -466,8 +466,8 @@ class moveNS():
 
         if self.mkernel:
 
-            mean_latents = kernel_params[self.m_start]
-            mean_params = [kernel_params[i] for i in range(self.m_start+1,len(kernel_params))]
+            mean_latents = self.kernel_params[self.m_start]
+            mean_params = [self.kernel_params[i] for i in range(self.m_start+1,len(self.kernel_params))]
             K_mean = self.mkernel(*[t(p) for t,p in zip(self.mtransforms, mean_params)])
             L_mean = tf.linalg.cholesky(K_mean.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=np.float64) * self.jitter_level)
             f_mean = tf.matmul((L_mean), mean_latents)
@@ -475,9 +475,9 @@ class moveNS():
             if X is None:
                 latent_means = f_mean
             else:
-                latent_means_x = tfd.GaussianProcessRegressionModel(kernel = K_mean, index_points = segT, observations = f_mean[:,0], observation_index_points=self.Z_).mean()
-                latent_means_y = tfd.GaussianProcessRegressionModel(kernel = K_mean, index_points = segT, observations = f_mean[:,1], observation_index_points=self.Z_).mean()
-                latent_means = tf.stack([latent_means_x,latent_means_y])
+                latent_means_x = tfd.GaussianProcessRegressionModel(kernel = K_mean, index_points = X, observations = f_mean[:,0], observation_index_points=self.Z_).mean()
+                latent_means_y = tfd.GaussianProcessRegressionModel(kernel = K_mean, index_points = X, observations = f_mean[:,1], observation_index_points=self.Z_).mean()
+                latent_means = tf.stack([latent_means_x,latent_means_y],axis=-1)
 
             return latent_means.numpy()
 
