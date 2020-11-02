@@ -28,7 +28,6 @@ import sys
 from tensorflow_probability import distributions as tfd
 from geopy.distance import geodesic
 
-%matplotlib inline
 
 from move_ns import moveNS
 
@@ -138,7 +137,7 @@ mover = moveNS(T,X,Z, ID, BATCH_SIZE=1000, MIN_REMAIN=500,velocity=True, std_obs
 
 
 #-mover.log_posterior(*mover.kernel_params)
-rning_rate = tf.optimizers.schedules.ExponentialDecay(
+learning_rate = tf.optimizers.schedules.ExponentialDecay(
     initial_learning_rate=1e-1,
     decay_steps=50,
     decay_rate=0.99,
