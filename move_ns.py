@@ -151,44 +151,47 @@ class moveNS():
             
     ##########################################################################################################
     #                                                                                                        #
-    #                             Code for running the HMC sampler                                           #
+    #                             Code for running the sampler                                           #
     #                                                                                                        #
     ##########################################################################################################
     def mala_sample(self, num_samples=100,skip=1,burn_in=0,init_step=1,threshold_start_estimate=500,threshold_use_estimate=1000):
 
         # calculate dimensions of parameter list for conversion to numpy arrays
         dims=[]
+        shapes=[]
         for a in self.kernel_params:
             if tf.rank(a)==0:
                 dims.append(1)
+                shapes.append(1)
             else:
-                dims.append(a.shape[0])
+                dims.append(tf.size(a))
+                shapes.append(tf.shape(a).numpy())
         dims=np.cumsum(dims)[:-1]
 
         # utility function to convert list of tf tensors to stacked numpy array
         def to_numpy(params):
-            return np.hstack([mk.numpy() for mk in params])
+            return np.hstack([mk.numpy().flatten() for mk in params])
 
         # utility function to set the current state 
         def set_state(array):
-            
-            for a, b in zip(np.split(array,dims), self.kernel_params):
-                b.assign(a.squeeze())
+                
+            for a, b, c in zip(np.split(array,dims), self.kernel_params, shapes):
+                b.assign(np.reshape(a,c).squeeze())
             return
-            
-            
+                
+                
         # calculate the log posterior and truncated drift at x
         def log_pdf_and_drift(x):
             delta = 1000
             set_state(x)
-            
+                
             with tf.GradientTape() as t:
                 logpdf = self.log_posterior(*self.kernel_params)
-            
+                
             gradients = t.gradient(logpdf, self.kernel_params)
             grad_log_pdf_x = to_numpy(gradients)
-            
-            
+    
+                
             return logpdf.numpy(), delta * grad_log_pdf_x / max(delta, np.linalg.norm(grad_log_pdf_x))
 
         initial_state= to_numpy(self.kernel_params)
@@ -201,9 +204,10 @@ class moveNS():
 
         samples = sampler.run_sampler(num_samples,burn_in,skip)
         self.num_samples=num_samples
-        self.samples_ = [tf.convert_to_tensor(sample_array,dtype=tf.float64) for sample_array in np.split(samples,dims,axis=-1)]
-        return None
-        
+        self.samples_ = [tf.convert_to_tensor(sample_array.reshape(np.hstack((-1,shape))),dtype=tf.float64) for sample_array, shape in zip(np.split(samples,dims,axis=-1),shapes)]
+        return 
+
+
     
     @staticmethod
     def _log_posterior(self, *kernel_params):
@@ -230,7 +234,7 @@ class moveNS():
 
                 f_ls = tf.matmul((L_ls), tf.expand_dims(ls_latents,-1))
                 ls_gp_prior = tfd.MultivariateNormalTriL(loc=tf.reduce_mean(f_ls),scale_tril=L_ls).log_prob(f_ls[:,0])
-                #ls_gp_prior = tfd.MultivariateNormalTriL(scale_tril=L_ls).log_prob(f_ls[:,0])
+               
                 if self.noise_prior is None:
                     ret_val = ls_gp_prior
                 else:
@@ -255,7 +259,7 @@ class moveNS():
 
                 K_amp = self.akernel(*[t(p) for t,p in zip(self.atransforms, amp_params)])
                 L_amp = tf.linalg.cholesky(K_amp.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level)
-                # amp_gp_prior = tfd.MultivariateNormalTriL(loc = amp_mean, scale_tril=L_amp).log_prob(amp_latents)
+                
                 f_amp = tf.matmul((L_amp), tf.expand_dims(amp_latents,-1))
                 amp_gp_prior = tfd.MultivariateNormalTriL(loc=tf.reduce_mean(f_amp),scale_tril=L_amp).log_prob(f_amp[:,0])
 
@@ -276,9 +280,8 @@ class moveNS():
                 L_mean = tf.linalg.cholesky(K_mean.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=tf.float64) * self.jitter_level)
                 f_mean = tf.matmul((L_mean), mean_latents)
                     
-                mean_gp_prior = tfd.MultivariateNormalTriL(scale_tril=L_mean).log_prob(f_mean)
-                #mean_gp_prior = tfd.MultivariateNormalTriL(scale_tril=L_mean).log_prob(mean_latents[...,0]) + \
-                #                    tfd.MultivariateNormalTriL(scale_tril=L_mean).log_prob(mean_latents[...,1])
+                mean_gp_prior = tfd.MultivariateNormalTriL(scale_tril=L_mean).log_prob(f_mean[...,0]) + \
+                                    tfd.MultivariateNormalTriL(scale_tril=L_mean).log_prob(f_mean[...,1])
                 
                 ret_val = ret_val + mean_gp_prior
                 for p, t, a in zip(self.mpriors, self.mtransforms, mean_params):
@@ -463,8 +466,8 @@ class moveNS():
 
         if self.mkernel:
 
-            mean_latents = kernel_params[self.m_start]
-            mean_params = [kernel_params[i] for i in range(self.m_start+1,len(kernel_params))]
+            mean_latents = self.kernel_params[self.m_start]
+            mean_params = [self.kernel_params[i] for i in range(self.m_start+1,len(self.kernel_params))]
             K_mean = self.mkernel(*[t(p) for t,p in zip(self.mtransforms, mean_params)])
             L_mean = tf.linalg.cholesky(K_mean.matrix(self.Z_,self.Z_) + tf.eye(tf.shape(input=self.Z_)[0], dtype=np.float64) * self.jitter_level)
             f_mean = tf.matmul((L_mean), mean_latents)
@@ -472,9 +475,9 @@ class moveNS():
             if X is None:
                 latent_means = f_mean
             else:
-                latent_means_x = tfd.GaussianProcessRegressionModel(kernel = K_mean, index_points = segT, observations = f_mean[:,0], observation_index_points=self.Z_).mean()
-                latent_means_y = tfd.GaussianProcessRegressionModel(kernel = K_mean, index_points = segT, observations = f_mean[:,1], observation_index_points=self.Z_).mean()
-                latent_means = tf.stack([latent_means_x,latent_means_y])
+                latent_means_x = tfd.GaussianProcessRegressionModel(kernel = K_mean, index_points = X, observations = f_mean[:,0], observation_index_points=self.Z_).mean()
+                latent_means_y = tfd.GaussianProcessRegressionModel(kernel = K_mean, index_points = X, observations = f_mean[:,1], observation_index_points=self.Z_).mean()
+                latent_means = tf.stack([latent_means_x,latent_means_y],axis=-1)
 
             return latent_means.numpy()
 
